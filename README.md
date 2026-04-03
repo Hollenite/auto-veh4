@@ -54,6 +54,7 @@ Allowed commands:
 - `set_all_red`
 
 These are defined in [`TrafficControlAction`](/Users/saichaitu/Desktop/Traffic_Control/traffic_control_env/models.py).
+These are defined in `models.py`.
 
 ## Observation Space
 
@@ -82,9 +83,9 @@ The environment includes three deterministic tasks:
 
 ### Hard: Heavy Congestion With Late Emergency
 - heavy congestion first
-- emergency vehicle appears later
+- multiple emergency vehicles appear after congestion has already formed
 
-Task definitions live in [task_bank.py](/Users/saichaitu/Desktop/Traffic_Control/traffic_control_env/task_bank.py).
+Task definitions live in `task_bank.py`.
 
 ## Reward Design
 
@@ -149,36 +150,69 @@ pip install -e .
 Start the OpenEnv server:
 
 ```bash
-cd /Users/saichaitu/Desktop/Traffic_Control/traffic_control_env
-uv run server --host 0.0.0.0 --port 8000
+cd traffic_control_env
+python -m server.app --host 0.0.0.0 --port 8000
 ```
 
 If the web interface is available, open:
 
 `http://localhost:8000/web`
 
+To list the available tasks for quick local testing:
+
+```bash
+curl http://localhost:8000/tasks
+```
+
 Run the baseline script:
 
 ```bash
-cd /Users/saichaitu/Desktop/Traffic_Control/traffic_control_env
-python inference.py
+cd traffic_control_env
+HF_TOKEN=dummy python inference.py
+```
+
+To run just one task instead of all three:
+
+```bash
+HF_TOKEN=dummy TASK_ID=hard python inference.py
 ```
 
 ## LLM Baseline Variables
 
-`inference.py` supports OpenAI-compatible model calls when these variables are set:
+`inference.py` always expects `HF_TOKEN` to exist because that is part of the
+hackathon contract.
+
+For local heuristic-only testing, you can safely use:
+
+```bash
+HF_TOKEN=dummy python inference.py
+```
+
+For real LLM-backed inference, set:
 - `API_BASE_URL`
 - `MODEL_NAME`
 - `HF_TOKEN`
 
-Without those variables, it falls back to a deterministic heuristic baseline.
+The script uses the OpenAI client with the Hugging Face router. If `HF_TOKEN`
+is set to `dummy`, `test`, or `local`, it skips network model calls and falls
+back to the built-in deterministic heuristic baseline.
+
+## Baseline Scores
+
+Current deterministic heuristic baseline after the latest hard-task tightening:
+- easy: `1.000`
+- medium: `0.979`
+- hard: `0.676`
+
+This is intentionally no longer a near-perfect hard-task result, which makes the
+benchmark more credible for evaluation.
 
 ## Docker
 
 Build locally:
 
 ```bash
-cd /Users/saichaitu/Desktop/Traffic_Control/traffic_control_env
+cd traffic_control_env
 docker build -t traffic-control-env:latest -f server/Dockerfile .
 docker run -p 8000:8000 traffic-control-env:latest
 ```

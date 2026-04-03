@@ -102,6 +102,9 @@ class TrafficControlEnvironment(Environment):
         phase_changed = False
         invalid_action = False
         status_parts: List[str] = []
+        steps_since_previous_phase_change = (
+            self._state.step_count - self._state.last_phase_change_step
+        )
 
         command = self._extract_command(action)
         if command is None or not self._is_valid_command(command):
@@ -124,6 +127,7 @@ class TrafficControlEnvironment(Environment):
             passed_vehicles=passed_vehicles,
             phase_changed=phase_changed,
             invalid_action=invalid_action,
+            steps_since_previous_phase_change=steps_since_previous_phase_change,
         )
         self._state.cumulative_reward += reward
 
@@ -422,16 +426,19 @@ class TrafficControlEnvironment(Environment):
         passed_vehicles: Dict[str, int],
         phase_changed: bool,
         invalid_action: bool,
+        steps_since_previous_phase_change: int,
     ) -> float:
         metrics = self._state.metrics
 
         throughput_reward = (
             passed_vehicles["normal"] * 1.0 + passed_vehicles["emergency"] * 3.0
         )
-        queue_penalty = metrics.total_queue_length * 0.15
-        wait_penalty = metrics.average_wait_time * 0.1
-        emergency_penalty = metrics.emergency_wait_time * 0.8
-        switch_penalty = 0.25 if phase_changed else 0.0
+        queue_penalty = metrics.total_queue_length * self._queue_penalty_scale()
+        wait_penalty = metrics.average_wait_time * self._wait_penalty_scale()
+        emergency_penalty = self._emergency_delay_penalty(metrics.emergency_wait_time)
+        switch_penalty = self._switch_penalty(phase_changed, steps_since_previous_phase_change)
+        all_red_penalty = self._all_red_penalty()
+        imbalance_penalty = self._imbalance_penalty()
         invalid_penalty = 2.0 if invalid_action else 0.0
 
         return (
@@ -440,6 +447,8 @@ class TrafficControlEnvironment(Environment):
             - wait_penalty
             - emergency_penalty
             - switch_penalty
+            - all_red_penalty
+            - imbalance_penalty
             - invalid_penalty
         )
 
@@ -464,22 +473,29 @@ class TrafficControlEnvironment(Environment):
             metrics.total_vehicles_passed / total_scheduled if total_scheduled else 1.0
         )
 
-        acceptable_average_wait = max(self._task.horizon_steps / 2.0, 1.0)
+        acceptable_average_wait = self._acceptable_average_wait()
         average_wait_score = self._clamp(
             1.0 - (metrics.average_wait_time / acceptable_average_wait)
         )
 
-        stability_score = self._clamp(
-            1.0 - (self._state.switch_count / max(self._task.horizon_steps - 1, 1))
-        )
+        stability_score = self._compute_stability_score()
 
         emergency_handling_score = 1.0
         if emergency_total > 0:
             emergency_pass_rate = self._count_emergency_passed() / emergency_total
             emergency_wait_quality = self._clamp(
-                1.0 - (metrics.total_emergency_wait_time / (self._task.horizon_steps * emergency_total))
+                1.0
+                - (
+                    metrics.total_emergency_wait_time
+                    / max(self._emergency_wait_budget() * emergency_total, 1.0)
+                )
             )
-            emergency_handling_score = (emergency_pass_rate + emergency_wait_quality) / 2.0
+            emergency_clearance_bonus = 1.0 if not metrics.emergency_vehicle_active else 0.0
+            emergency_handling_score = (
+                emergency_pass_rate * 0.45
+                + emergency_wait_quality * 0.4
+                + emergency_clearance_bonus * 0.15
+            )
 
         fairness_score = self._compute_fairness_score(scheduled_by_direction)
 
@@ -520,16 +536,28 @@ class TrafficControlEnvironment(Environment):
 
     def _compute_fairness_score(self, scheduled_by_direction: Dict[str, int]) -> float:
         direction_ratios: List[float] = []
+        wait_pressures: List[float] = []
         for direction, scheduled_count in scheduled_by_direction.items():
             if scheduled_count <= 0:
                 continue
             passed = self._state.metrics.vehicles_passed_by_direction.get(direction, 0)
             direction_ratios.append(passed / scheduled_count)
+            queued = self._state.lane_queues[direction]
+            if queued:
+                wait_pressures.append(
+                    sum(vehicle.wait_time for vehicle in queued) / len(queued)
+                )
+            else:
+                wait_pressures.append(0.0)
 
         if not direction_ratios:
             return 1.0
 
-        return self._clamp(1.0 - (max(direction_ratios) - min(direction_ratios)))
+        service_balance = max(direction_ratios) - min(direction_ratios)
+        wait_balance = max(wait_pressures) - min(wait_pressures) if wait_pressures else 0.0
+        normalized_wait_gap = wait_balance / max(self._task.horizon_steps / 2.0, 1.0)
+
+        return self._clamp(1.0 - (service_balance * 0.65) - (normalized_wait_gap * 0.35))
 
     def _total_scheduled_vehicles(self) -> int:
         return sum(spawn.count for spawn in self._task.spawn_schedule)
@@ -549,3 +577,80 @@ class TrafficControlEnvironment(Environment):
 
     def _clamp(self, value: float, low: float = 0.0, high: float = 1.0) -> float:
         return max(low, min(value, high))
+
+    def _queue_penalty_scale(self) -> float:
+        if self._task.task_id == TaskId.HARD:
+            return 0.2
+        if self._task.task_id == TaskId.MEDIUM:
+            return 0.17
+        return 0.15
+
+    def _wait_penalty_scale(self) -> float:
+        if self._task.task_id == TaskId.HARD:
+            return 0.14
+        if self._task.task_id == TaskId.MEDIUM:
+            return 0.12
+        return 0.1
+
+    def _emergency_delay_penalty(self, emergency_wait_time: int) -> float:
+        if emergency_wait_time <= 0:
+            return 0.0
+
+        base_multiplier = 0.8 if self._task.task_id != TaskId.HARD else 1.15
+        escalating_penalty = emergency_wait_time * base_multiplier
+        if self._task.task_id == TaskId.HARD and emergency_wait_time >= 4:
+            escalating_penalty += 1.0 + ((emergency_wait_time - 3) * 0.75)
+        return escalating_penalty
+
+    def _switch_penalty(self, phase_changed: bool, steps_since_previous_phase_change: int) -> float:
+        if not phase_changed:
+            return 0.0
+
+        base_penalty = 0.25 if self._task.task_id != TaskId.HARD else 0.35
+        if steps_since_previous_phase_change <= 1:
+            return base_penalty + 0.35
+        return base_penalty
+
+    def _all_red_penalty(self) -> float:
+        if self._state.current_phase != SignalPhase.ALL_RED:
+            return 0.0
+        if self._state.metrics.total_queue_length == 0:
+            return 0.0
+        return 0.2 if self._task.task_id != TaskId.HARD else 0.35
+
+    def _imbalance_penalty(self) -> float:
+        waits = self._average_wait_by_direction(self._state.lane_queues)
+        active_waits = [value for value in waits.values() if value > 0.0]
+        if len(active_waits) < 2:
+            return 0.0
+        imbalance = max(active_waits) - min(active_waits)
+        scale = 0.03 if self._task.task_id != TaskId.HARD else 0.05
+        return imbalance * scale
+
+    def _acceptable_average_wait(self) -> float:
+        if self._task.task_id == TaskId.HARD:
+            return max(self._task.horizon_steps / 4.5, 1.0)
+        if self._task.task_id == TaskId.MEDIUM:
+            return max(self._task.horizon_steps / 3.8, 1.0)
+        return max(self._task.horizon_steps / 3.0, 1.0)
+
+    def _compute_stability_score(self) -> float:
+        allowed_switches = {
+            TaskId.EASY: 4,
+            TaskId.MEDIUM: 5,
+            TaskId.HARD: 6,
+        }[self._task.task_id]
+        overswitch_penalty = max(self._state.switch_count - allowed_switches, 0)
+        all_red_penalty = 1 if self._state.current_phase == SignalPhase.ALL_RED else 0
+        return self._clamp(
+            1.0
+            - (overswitch_penalty / max(self._task.horizon_steps / 3.0, 1.0))
+            - (all_red_penalty * 0.1)
+        )
+
+    def _emergency_wait_budget(self) -> float:
+        if self._task.task_id == TaskId.HARD:
+            return max(self._task.horizon_steps / 5.0, 2.0)
+        if self._task.task_id == TaskId.MEDIUM:
+            return max(self._task.horizon_steps / 4.0, 2.0)
+        return max(self._task.horizon_steps / 3.0, 2.0)

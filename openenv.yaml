@@ -1,5 +1,40 @@
 spec_version: 1
 name: traffic_control_env
+version: "0.1.0"
+description: >
+  A real-world OpenEnv benchmark for autonomous traffic-signal control at a
+  single 4-way intersection with emergency vehicle prioritization,
+  congestion recovery, fairness tradeoffs, and deterministic grading.
+author: SAICHAITU2012
+license: mit
+tags:
+  - openenv
+  - traffic-control
+  - reinforcement-learning
+  - infrastructure
+  - real-world
+tasks:
+  - id: easy
+    difficulty: easy
+    description: Balanced traffic with no emergency vehicles.
+  - id: medium
+    difficulty: medium
+    description: Moderate traffic with one emergency vehicle appearing mid-episode.
+  - id: hard
+    difficulty: hard
+    description: Heavy asymmetric congestion with multiple late emergency vehicles.
+action_space:
+  type: discrete
+  values:
+    - set_ns_green
+    - set_ew_green
+    - hold_current_phase
+    - set_all_red
+observation_space:
+  type: structured
+reward_range:
+  min: -10.0
+  max: 3.0
 type: space
 runtime: fastapi
 app: server.app:app

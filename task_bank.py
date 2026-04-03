@@ -74,37 +74,49 @@ HARD_TASK = TaskScenario(
     task_id=TaskId.HARD,
     name="Heavy Congestion With Late Emergency",
     description=(
-        "High congestion builds up before an emergency vehicle appears. The controller "
-        "must recover flow and still prioritize the emergency lane."
+        "Heavy asymmetric congestion builds up before emergency vehicles appear. The "
+        "controller must recover flow, avoid starving quieter directions, and still "
+        "prioritize emergency lanes under pressure."
     ),
-    horizon_steps=16,
+    horizon_steps=22,
     initial_phase=SignalPhase.ALL_RED,
     pass_capacity_per_lane=1,
     spawn_schedule=[
-        VehicleSpawn(arrival_step=0, direction=Direction.NORTH, count=3),
+        VehicleSpawn(arrival_step=0, direction=Direction.NORTH, count=4),
         VehicleSpawn(arrival_step=0, direction=Direction.SOUTH, count=2),
-        VehicleSpawn(arrival_step=0, direction=Direction.EAST, count=3),
+        VehicleSpawn(arrival_step=0, direction=Direction.EAST, count=4),
         VehicleSpawn(arrival_step=1, direction=Direction.WEST, count=3),
-        VehicleSpawn(arrival_step=2, direction=Direction.NORTH, count=2),
+        VehicleSpawn(arrival_step=2, direction=Direction.NORTH, count=3),
         VehicleSpawn(arrival_step=2, direction=Direction.EAST, count=2),
-        VehicleSpawn(arrival_step=3, direction=Direction.SOUTH, count=2),
-        VehicleSpawn(arrival_step=4, direction=Direction.WEST, count=2),
+        VehicleSpawn(arrival_step=3, direction=Direction.WEST, count=2),
+        VehicleSpawn(arrival_step=4, direction=Direction.SOUTH, count=3),
         VehicleSpawn(arrival_step=5, direction=Direction.NORTH, count=2),
         VehicleSpawn(
-            arrival_step=6,
+            arrival_step=7,
             direction=Direction.WEST,
             vehicle_type=VehicleType.EMERGENCY,
             count=1,
         ),
-        VehicleSpawn(arrival_step=7, direction=Direction.EAST, count=2),
-        VehicleSpawn(arrival_step=8, direction=Direction.SOUTH, count=2),
-        VehicleSpawn(arrival_step=10, direction=Direction.NORTH, count=1),
+        VehicleSpawn(arrival_step=8, direction=Direction.EAST, count=3),
+        VehicleSpawn(arrival_step=9, direction=Direction.SOUTH, count=2),
+        VehicleSpawn(arrival_step=10, direction=Direction.NORTH, count=2),
+        VehicleSpawn(arrival_step=11, direction=Direction.WEST, count=2),
+        VehicleSpawn(
+            arrival_step=12,
+            direction=Direction.SOUTH,
+            vehicle_type=VehicleType.EMERGENCY,
+            count=1,
+        ),
+        VehicleSpawn(arrival_step=13, direction=Direction.EAST, count=2),
+        VehicleSpawn(arrival_step=15, direction=Direction.NORTH, count=2),
+        VehicleSpawn(arrival_step=17, direction=Direction.WEST, count=1),
     ],
     grader_weights={
-        "throughput": 0.25,
-        "average_wait": 0.2,
+        "throughput": 0.2,
+        "average_wait": 0.15,
         "emergency_handling": 0.35,
         "fairness": 0.2,
+        "stability": 0.1,
     },
 )
 

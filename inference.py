@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+from openai import OpenAI
+
 try:
     from traffic_control_env.models import (
         TaskId,
@@ -17,19 +19,22 @@ except ModuleNotFoundError:
     from server import TrafficControlEnvironment
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME")
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
-ENV_BASE_URL = os.getenv("ENV_BASE_URL")
+MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-4.1-mini")
+HF_TOKEN = os.getenv("HF_TOKEN")
+TASK_ID_FILTER = os.getenv("TASK_ID")
 MAX_EXTRA_STEPS = 5
+ENV_NAME = "traffic_control_env"
+
+if HF_TOKEN is None:
+    raise ValueError("HF_TOKEN environment variable is required")
 
 
 @dataclass
 class EpisodeResult:
     task_id: str
-    total_reward: float
-    final_score: float
+    success: bool
     steps: int
-    strategy: str
+    rewards: list[float]
 
 
 def heuristic_policy(observation: TrafficControlObservation) -> TrafficCommand:
@@ -72,24 +77,26 @@ def heuristic_policy(observation: TrafficControlObservation) -> TrafficCommand:
 
 
 def llm_policy(observation: TrafficControlObservation) -> Optional[TrafficCommand]:
-    if not (MODEL_NAME and HF_TOKEN):
+    if HF_TOKEN is None or HF_TOKEN.strip().lower() in {"dummy", "test", "local"}:
         return None
 
     try:
-        from openai import OpenAI
-    except ImportError:
+        client = OpenAI(
+            base_url=API_BASE_URL,
+            api_key=HF_TOKEN,
+        )
+    except Exception:
         return None
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     prompt = f"""
 You control one 4-way traffic intersection.
-Choose exactly one command from:
+Choose exactly one action from:
 - set_ns_green
 - set_ew_green
 - hold_current_phase
 - set_all_red
 
-Current state:
+State:
 - current_phase: {observation.current_phase.value}
 - current_timestep: {observation.current_timestep}
 - queue_north: {observation.queue_north}
@@ -100,72 +107,103 @@ Current state:
 - avg_wait_south: {observation.avg_wait_south:.2f}
 - avg_wait_east: {observation.avg_wait_east:.2f}
 - avg_wait_west: {observation.avg_wait_west:.2f}
-- emergency_present: {observation.emergency_present}
+- emergency_present: {str(observation.emergency_present).lower()}
 - emergency_direction: {observation.emergency_direction.value if observation.emergency_direction else "none"}
 - time_since_last_phase_change: {observation.time_since_last_phase_change}
 
-Reply with only the command text.
+Reply with only the action string.
 """.strip()
 
     try:
-        response = client.responses.create(model=MODEL_NAME, input=prompt)
-        output_text = getattr(response, "output_text", "").strip().lower()
-        if not output_text:
+        response = client.responses.create(
+            model=MODEL_NAME,
+            input=prompt,
+        )
+        text = getattr(response, "output_text", "").strip().lower()
+        if not text:
             return None
-        first_line = output_text.splitlines()[0].strip()
+        command_text = text.splitlines()[0].strip()
         allowed = {command.value: command for command in TrafficCommand}
-        return allowed.get(first_line)
+        return allowed.get(command_text)
     except Exception:
         return None
 
 
-def choose_action(observation: TrafficControlObservation) -> tuple[TrafficCommand, str]:
+def choose_action(observation: TrafficControlObservation) -> TrafficCommand:
     llm_choice = llm_policy(observation)
     if llm_choice is not None:
-        return llm_choice, "llm"
-    return heuristic_policy(observation), "heuristic"
+        return llm_choice
+    return heuristic_policy(observation)
 
 
-def run_local_episode(task_id: TaskId) -> EpisodeResult:
+def format_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def format_reward(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def format_rewards(values: list[float]) -> str:
+    return ",".join(format_reward(value) for value in values)
+
+
+def run_episode(task_id: TaskId) -> EpisodeResult:
     env = TrafficControlEnvironment()
-    observation = env.reset(task_id=task_id.value)
-    total_reward = float(observation.reward or 0.0)
-    strategy = "heuristic"
+    rewards: list[float] = []
+    success = False
+    step_count = 0
 
-    safety_limit = env._task.horizon_steps + MAX_EXTRA_STEPS
-    while not observation.done and env.state.step_count < safety_limit:
-        command, strategy = choose_action(observation)
-        observation = env.step(TrafficControlAction(command=command))
-        total_reward += float(observation.reward or 0.0)
+    print(f"[START] task={task_id.value} env={ENV_NAME} model={MODEL_NAME}")
 
-    return EpisodeResult(
-        task_id=task_id.value,
-        total_reward=total_reward,
-        final_score=float(env.state.final_score or 0.0),
-        steps=env.state.step_count,
-        strategy=strategy,
-    )
+    try:
+        observation = env.reset(task_id=task_id.value)
+        safety_limit = env._task.horizon_steps + MAX_EXTRA_STEPS
+
+        while not observation.done and env.state.step_count < safety_limit:
+            command = choose_action(observation)
+            action_text = command.value
+            error_text = "null"
+
+            try:
+                observation = env.step(TrafficControlAction(command=command))
+                reward = float(observation.reward or 0.0)
+            except Exception as exc:
+                reward = 0.0
+                observation = TrafficControlObservation(
+                    reward=reward,
+                    done=True,
+                    status_message=str(exc),
+                )
+                error_text = str(exc)
+
+            step_count += 1
+            rewards.append(reward)
+
+            print(
+                f"[STEP] step={step_count} action={action_text} "
+                f"reward={format_reward(reward)} done={format_bool(observation.done)} "
+                f"error={error_text}"
+            )
+
+        success = bool(env.state.final_score is not None and env.state.final_score > 0.0)
+        return EpisodeResult(
+            task_id=task_id.value,
+            success=success,
+            steps=step_count,
+            rewards=rewards,
+        )
+    finally:
+        print(
+            f"[END] success={format_bool(success)} steps={step_count} "
+            f"rewards={format_rewards(rewards)}"
+        )
 
 
 def main() -> None:
-    if ENV_BASE_URL:
-        print("ENV_BASE_URL is set, but this baseline currently runs against the local environment class.")
-        print("Unset ENV_BASE_URL to use the local baseline mode.")
-        return
-
-    results = [run_local_episode(task_id) for task_id in TaskId]
-    average_score = sum(result.final_score for result in results) / len(results)
-
-    print("Traffic Control baseline results")
-    print("=" * 44)
-    for result in results:
-        print(
-            f"{result.task_id:>6} | steps={result.steps:>2} | "
-            f"score={result.final_score:.3f} | total_reward={result.total_reward:.3f} | "
-            f"strategy={result.strategy}"
-        )
-    print("-" * 44)
-    print(f"average_score={average_score:.3f}")
+    task_ids = [TaskId(TASK_ID_FILTER)] if TASK_ID_FILTER else list(TaskId)
+    for task_id in task_ids:
+        run_episode(task_id)
 
 
 if __name__ == "__main__":
