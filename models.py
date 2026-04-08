@@ -5,6 +5,17 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+STRICT_UNIT_INTERVAL_EPSILON = 0.01
+
+
+def strict_unit_interval(value: float) -> float:
+    """Keep validator-visible numeric outputs strictly inside (0, 1).
+
+    The margin is intentionally wide enough to stay inside the interval even
+    after reward values are formatted to two decimal places in inference logs.
+    """
+    return max(STRICT_UNIT_INTERVAL_EPSILON, min(1.0 - STRICT_UNIT_INTERVAL_EPSILON, value))
+
 try:
     from openenv.core.env_server.types import Action, Observation, State
 except ImportError:

@@ -96,7 +96,8 @@ Per-step reward combines:
 - penalty for switching phases too often
 - penalty for invalid actions
 
-This gives dense reward signals instead of only a final pass/fail score.
+The simulator still uses dense internal reward signals, but validator-visible
+reported rewards are normalized strictly inside `(0.0, 1.0)`.
 
 ## Deterministic Grading
 

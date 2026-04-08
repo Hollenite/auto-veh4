@@ -24,6 +24,7 @@ try:
         VehicleRecord,
         VehicleSpawn,
         VehicleType,
+        strict_unit_interval,
     )
     from ..task_bank import DEFAULT_TASK_ID, get_task
 except ImportError:
@@ -39,6 +40,7 @@ except ImportError:
         VehicleRecord,
         VehicleSpawn,
         VehicleType,
+        strict_unit_interval,
     )
     from task_bank import DEFAULT_TASK_ID, get_task
 
@@ -83,7 +85,7 @@ class TrafficControlEnvironment(Environment):
             episode_id=episode_id or str(uuid4()),
         )
         return self._build_observation(
-            reward=0.0,
+            reward=self._reported_reward(0.0),
             done=False,
             status_message=(
                 f"Loaded task '{self._task.name}'. "
@@ -94,7 +96,7 @@ class TrafficControlEnvironment(Environment):
     def step(self, action: TrafficControlAction) -> TrafficControlObservation:
         if self._state.done:
             return self._build_observation(
-                reward=0.0,
+                reward=self._reported_reward(0.0),
                 done=True,
                 status_message="Episode is already complete. Call reset() to start a new run.",
             )
@@ -130,6 +132,7 @@ class TrafficControlEnvironment(Environment):
             steps_since_previous_phase_change=steps_since_previous_phase_change,
         )
         self._state.cumulative_reward += reward
+        reported_reward = self._reported_reward(reward)
 
         if passed_vehicles:
             passed_summary = ", ".join(
@@ -157,7 +160,7 @@ class TrafficControlEnvironment(Environment):
             )
 
         return self._build_observation(
-            reward=reward,
+            reward=reported_reward,
             done=done,
             status_message=" ".join(status_parts),
         )
@@ -582,8 +585,10 @@ class TrafficControlEnvironment(Environment):
         return max(low, min(value, high))
 
     def _strict_score(self, value: float) -> float:
-        epsilon = 1e-6
-        return max(epsilon, min(1.0 - epsilon, value))
+        return strict_unit_interval(value)
+
+    def _reported_reward(self, value: float) -> float:
+        return strict_unit_interval(value)
 
     def _queue_penalty_scale(self) -> float:
         if self._task.task_id == TaskId.HARD:

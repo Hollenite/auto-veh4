@@ -12,10 +12,17 @@ try:
         TrafficCommand,
         TrafficControlAction,
         TrafficControlObservation,
+        strict_unit_interval,
     )
     from traffic_control_env.server import TrafficControlEnvironment
 except ModuleNotFoundError:
-    from models import TaskId, TrafficCommand, TrafficControlAction, TrafficControlObservation
+    from models import (
+        TaskId,
+        TrafficCommand,
+        TrafficControlAction,
+        TrafficControlObservation,
+        strict_unit_interval,
+    )
     from server import TrafficControlEnvironment
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
@@ -148,6 +155,10 @@ def format_rewards(values: list[float]) -> str:
     return ",".join(format_reward(value) for value in values)
 
 
+def reported_reward(value: float) -> float:
+    return strict_unit_interval(value)
+
+
 def run_episode(task_id: TaskId) -> EpisodeResult:
     env = TrafficControlEnvironment()
     rewards: list[float] = []
@@ -167,9 +178,9 @@ def run_episode(task_id: TaskId) -> EpisodeResult:
 
             try:
                 observation = env.step(TrafficControlAction(command=command))
-                reward = float(observation.reward or 0.0)
+                reward = reported_reward(float(observation.reward or 0.0))
             except Exception as exc:
-                reward = 0.0
+                reward = reported_reward(0.0)
                 observation = TrafficControlObservation(
                     reward=reward,
                     done=True,
