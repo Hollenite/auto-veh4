@@ -66,7 +66,7 @@ Each observation contains:
 - average waiting times for all four directions
 - emergency presence and direction
 - total vehicles passed
-- status message
+- status message.
 
 ## Task Set
 
